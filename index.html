@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      (function() {
+        // Fix for "Cannot set property fetch of #<Window> which has only a getter"
+        try {
+          let currentFetch = window.fetch;
+          const desc = Object.getOwnPropertyDescriptor(window, 'fetch') ||
+                       Object.getOwnPropertyDescriptor(Window.prototype, 'fetch');
+          if (desc && !desc.set) {
+            Object.defineProperty(window, 'fetch', {
+              get() { return currentFetch; },
+              set(fn) { currentFetch = fn; },
+              configurable: true,
+              enumerable: true
+            });
+          }
+        } catch (e) {}
+
+        try {
+          const origDefineProperty = Object.defineProperty;
+          Object.defineProperty = function(obj, prop, descriptor) {
+            if ((obj === window || (typeof Window !== 'undefined' && obj === Window.prototype)) &&
+                prop === 'fetch' && descriptor && descriptor.get && !descriptor.set) {
+              let customVal;
+              const origGet = descriptor.get;
+              descriptor.get = function() {
+                return customVal !== undefined ? customVal : origGet.call(this);
+              };
+              descriptor.set = function(val) {
+                customVal = val;
+              };
+            }
+            return origDefineProperty.apply(this, arguments);
+          };
+        } catch (e) {}
+
+        window.addEventListener('error', function(event) {
+          if ((event.message && event.message.includes('fetch') && event.message.includes('getter')) ||
+              (event.error && event.error.message && event.error.message.includes('fetch') && event.error.message.includes('getter'))) {
+            event.stopImmediatePropagation();
+            event.preventDefault();
+            return true;
+          }
+        }, true);
+      })();
+    </script>
+    <title>Classroom Picker - Gọi Tên Học Sinh Lên Bảng Vui Nhộn</title>
+    <meta name="description" content="Ứng dụng gọi tên học sinh lên bảng vui nhộn với vòng quay may mắn, slot machine, và cuộc đua trực quan." />
+    <meta property="og:title" content="Classroom Picker - Gọi Tên Học Sinh Lên Bảng Vui Nhộn" />
+    <meta property="og:description" content="Ứng dụng gọi tên học sinh lên bảng vui nhộn với vòng quay may mắn, slot machine, và cuộc đua trực quan." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#4f46e5" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="ClassPicker" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Outfit:wght@500;600;700;800;900&display=swap" rel="stylesheet">
+  </head>
+  <body class="bg-slate-50 text-slate-800 antialiased font-sans selection:bg-amber-200">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

@@ -1,0 +1,6 @@
+{
+  "name": "Classroom Picker - Gọi Tên Lên Bảng",
+  "description": "Ứng dụng gọi tên học sinh lên bảng vui nhộn với vòng quay may mắn, slot machine, và cuộc đua trực quan.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,129 @@
+{
+  "entities": {
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Represents a user account with credentials, profile info, expiration date, and device login limits.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the account owner or creator",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "username": {
+          "type": "string",
+          "description": "Unique login username",
+          "minLength": 3,
+          "maxLength": 50,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "password": {
+          "type": "string",
+          "description": "Account password visible to admin and editable by owner",
+          "minLength": 3,
+          "maxLength": 100
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User display name shown in UI",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "avatar": {
+          "type": "string",
+          "description": "Avatar image URL or base64 data URI",
+          "minLength": 0,
+          "maxLength": 150000
+        },
+        "role": {
+          "type": "string",
+          "description": "Account role",
+          "enum": ["admin", "user"]
+        },
+        "status": {
+          "type": "string",
+          "description": "Account status",
+          "enum": ["active", "locked"]
+        },
+        "maxDevices": {
+          "type": "integer",
+          "description": "Maximum simultaneous devices allowed (default 2)"
+        },
+        "activeDeviceIds": {
+          "type": "array",
+          "description": "List of active device IDs currently logged into this account"
+        },
+        "activeDevicesMeta": {
+          "type": "string",
+          "description": "Metadata of active devices (device names and login times)",
+          "minLength": 0,
+          "maxLength": 5000
+        },
+        "expiresAt": {
+          "type": "integer",
+          "description": "Account expiration timestamp in milliseconds"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the account was created"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the account was last updated"
+        }
+      },
+      "required": [
+        "uid",
+        "username",
+        "password",
+        "displayName",
+        "avatar",
+        "role",
+        "status",
+        "maxDevices",
+        "activeDeviceIds",
+        "activeDevicesMeta",
+        "expiresAt",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted admin lookup record indexed by user UID",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 150
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/accounts/{accountId}": {
+      "schema": { "$ref": "#/entities/UserAccount" },
+      "description": "Stores user accounts managed by admins and accessed by owners"
+    },
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Stores admin privileges for RBAC verification"
+    }
+  }
+}

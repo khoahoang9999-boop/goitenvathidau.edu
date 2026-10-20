@@ -1,0 +1,167 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Global Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        (request.auth.token.email == "khoahoang9999@gmail.com" && request.auth.token.email_verified == true) ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidUserAccount(data) {
+      return data.keys().hasAll([
+          'uid',
+          'username',
+          'password',
+          'displayName',
+          'avatar',
+          'role',
+          'status',
+          'maxDevices',
+          'activeDeviceIds',
+          'activeDevicesMeta',
+          'expiresAt',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid',
+          'username',
+          'password',
+          'displayName',
+          'avatar',
+          'role',
+          'status',
+          'maxDevices',
+          'activeDeviceIds',
+          'activeDevicesMeta',
+          'expiresAt',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.username is string && data.username.size() >= 3 && data.username.size() <= 50 && data.username.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.password is string && data.password.size() >= 3 && data.password.size() <= 100 &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+        data.avatar is string && data.avatar.size() >= 0 && data.avatar.size() <= 150000 &&
+        data.role is string && (data.role == 'admin' || data.role == 'user') &&
+        data.status is string && (data.status == 'active' || data.status == 'locked') &&
+        data.maxDevices is int && data.maxDevices >= 1 && data.maxDevices <= 10 &&
+        data.activeDeviceIds is list && data.activeDeviceIds.size() <= 5 &&
+        (data.activeDeviceIds.size() == 0 || (data.activeDeviceIds[0] is string && data.activeDeviceIds[0].size() <= 128)) &&
+        data.activeDevicesMeta is string && data.activeDevicesMeta.size() >= 0 && data.activeDevicesMeta.size() <= 5000 &&
+        data.expiresAt is int && data.expiresAt > 0 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAdminRecord(data) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'createdAt']) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 150 &&
+        data.createdAt is timestamp;
+    }
+
+    // 4. Collection: /accounts/{accountId}
+    match /accounts/{accountId} {
+      allow get: if isSignedIn() && isValidId(accountId) && (
+        resource.data.uid == request.auth.uid || isAdmin()
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.uid == request.auth.uid ||
+        (request.auth.token.email == "khoahoang9999@gmail.com" && request.auth.token.email_verified == true)
+      );
+
+      allow create: if isSignedIn() && isValidId(accountId) && isValidUserAccount(incoming()) &&
+        incoming().username == accountId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time && (
+          (
+            incoming().uid == request.auth.uid &&
+            incoming().role == 'user' &&
+            incoming().status == 'active' &&
+            incoming().maxDevices == 2 &&
+            incoming().activeDeviceIds.size() <= 2
+          ) ||
+          isAdmin()
+        );
+
+      allow update: if (
+        isSignedIn() && isValidId(accountId) && isValidUserAccount(incoming()) && (
+          (
+            isAdmin() &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time
+          ) || (
+            existing().status == 'active' &&
+            existing().uid == request.auth.uid &&
+            incoming().uid == existing().uid &&
+            incoming().username == existing().username &&
+            incoming().role == existing().role &&
+            incoming().status == existing().status &&
+            incoming().maxDevices == existing().maxDevices &&
+            incoming().expiresAt == existing().expiresAt &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            incoming().activeDeviceIds.size() <= existing().maxDevices && (
+              // Action: Update Profile (displayName, avatar, password)
+              incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'avatar', 'password', 'updatedAt']) ||
+              // Action: Update Device Session (activeDeviceIds, activeDevicesMeta)
+              incoming().diff(existing()).affectedKeys().hasOnly(['activeDeviceIds', 'activeDevicesMeta', 'updatedAt'])
+            )
+          )
+        )
+      );
+
+      allow delete: if isSignedIn() && isValidId(accountId) && isAdmin();
+    }
+
+    // 5. Collection: /admins/{adminUid}
+    match /admins/{adminUid} {
+      allow get: if isSignedIn() && isValidId(adminUid) && (
+        request.auth.uid == adminUid || isAdmin()
+      );
+
+      allow create: if isSignedIn() && isValidId(adminUid) && isValidAdminRecord(incoming()) &&
+        incoming().uid == adminUid &&
+        incoming().createdAt == request.time &&
+        isAdmin();
+
+      allow update: if (
+        isSignedIn() && isValidId(adminUid) && isValidAdminRecord(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['email']) &&
+        isAdmin()
+      );
+
+      allow delete: if isSignedIn() && isValidId(adminUid) && isAdmin();
+    }
+  }
+}
