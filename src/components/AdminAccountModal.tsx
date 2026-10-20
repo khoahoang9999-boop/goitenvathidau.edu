@@ -58,15 +58,36 @@ export const AdminAccountModal: React.FC<AdminAccountModalProps> = ({ isOpen, on
     null
   );
 
+  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
+
   useEffect(() => {
     const sync = () => {
       setAccounts(accountService.getAllAccounts());
     };
     sync();
-    return accountService.subscribe(sync);
+    if (isOpen) {
+      accountService.refreshFromCloud();
+    }
+    const interval = isOpen
+      ? window.setInterval(() => {
+          accountService.refreshFromCloud();
+        }, 3000)
+      : undefined;
+    const unsub = accountService.subscribe(sync);
+    return () => {
+      unsub();
+      if (interval) clearInterval(interval);
+    };
   }, [isOpen]);
 
   if (!isOpen) return null;
+
+  const handleManualCloudSync = async () => {
+    setIsSyncingCloud(true);
+    await accountService.refreshFromCloud();
+    setIsSyncingCloud(false);
+    showNotice('success', 'Đã đồng bộ danh sách tài khoản mới nhất từ đám mây!');
+  };
 
   const showNotice = (type: 'success' | 'error', text: string) => {
     setBannerMsg({ type, text });
@@ -228,6 +249,9 @@ export const AdminAccountModal: React.FC<AdminAccountModalProps> = ({ isOpen, on
                 <span className="text-xs bg-amber-500 text-slate-950 font-black px-2.5 py-0.5 rounded-full">
                   {accounts.length} tài khoản
                 </span>
+                <span className="text-[11px] bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 font-bold px-2.5 py-0.5 rounded-full">
+                  ☁️ Đã kết nối Đám mây Realtime
+                </span>
               </h2>
               <p className="text-xs text-slate-300">
                 Tạo tài khoản mới, xem tên đăng nhập & mật khẩu, gia hạn sử dụng và kiểm soát tối đa 2 máy đăng nhập
@@ -236,6 +260,16 @@ export const AdminAccountModal: React.FC<AdminAccountModalProps> = ({ isOpen, on
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handleManualCloudSync}
+              disabled={isSyncingCloud}
+              className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-extrabold transition-colors cursor-pointer flex items-center gap-1.5 shadow-sm disabled:opacity-60"
+              title="Đồng bộ danh sách tài khoản mới nhất từ đám mây ngay lập tức"
+            >
+              <RotateCcw size={15} className={isSyncingCloud ? 'animate-spin' : ''} />
+              <span>Đồng bộ ngay</span>
+            </button>
             <button
               type="button"
               onClick={onClose}

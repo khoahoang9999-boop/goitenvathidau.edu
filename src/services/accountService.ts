@@ -265,6 +265,16 @@ class AccountService {
     // Start real-time Firestore subscription immediately on all devices & domains
     if (typeof window !== 'undefined') {
       this.startRealtimeFirestoreSync();
+      this.refreshFromCloud();
+
+      window.addEventListener('focus', () => {
+        this.refreshFromCloud();
+      });
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          this.refreshFromCloud();
+        }
+      });
 
       onAuthStateChanged(auth, async (fbUser) => {
         if (fbUser) {
@@ -354,6 +364,40 @@ class AccountService {
   }
 
   /**
+   * Actively fetch all accounts from Firestore to guarantee immediate sync across iframes/tabs
+   */
+  public async refreshFromCloud(): Promise<void> {
+    try {
+      const { getDocs } = await import('firebase/firestore');
+      const snap = await getDocs(collection(db, 'accounts'));
+      if (snap.empty) return;
+
+      const cloudMap: Record<string, UserAccount> = {};
+      snap.docs.forEach((docSnap) => {
+        const username = docSnap.id;
+        cloudMap[username] = docDataToUserAccount(username, docSnap.data());
+      });
+
+      // Upload any local-only accounts once on initial boot
+      if (!this.hasSyncedLocalToCloud) {
+        this.hasSyncedLocalToCloud = true;
+        for (const localAcc of Object.values(this.accounts)) {
+          if (!cloudMap[localAcc.username]) {
+            await this.syncAccountToFirestore(localAcc, true);
+            cloudMap[localAcc.username] = localAcc;
+          }
+        }
+      }
+
+      this.accounts = { ...getDefaultAccounts(), ...cloudMap };
+      this.saveToStorage(false);
+      this.notify();
+    } catch (err) {
+      console.warn('Cloud refresh warning:', err);
+    }
+  }
+
+  /**
    * Real-time Firestore listener across ALL devices, browsers, and domains (AI Studio & Cloudflare).
    * Runs immediately on app boot without requiring Google OAuth login.
    */
@@ -385,7 +429,7 @@ class AccountService {
           }
         });
 
-        // Push any local-only accounts (e.g. created before Firestore rules update) up to Firestore once
+        // Push any local-only accounts up to Firestore once
         if (!this.hasSyncedLocalToCloud) {
           this.hasSyncedLocalToCloud = true;
           Object.values(this.accounts).forEach((localAcc) => {
