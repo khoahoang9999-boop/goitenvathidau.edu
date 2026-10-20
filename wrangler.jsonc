@@ -1,0 +1,11 @@
+{
+  "name": "goitenvathidau-edu",
+  "compatibility_date": "2025-04-01",
+  "build": {
+    "command": "npm run build"
+  },
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  }
+}

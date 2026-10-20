@@ -1,6 +1,7 @@
 node_modules/
 build/
 dist/
+dev-dist/
 coverage/
 .DS_Store
 *.log
@@ -8,3 +9,4 @@ coverage/
 !.env.example
 bun.lock
 bun.lockb
+package-lock.json
