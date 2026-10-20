@@ -102,13 +102,67 @@ export const AdminAccountModal: React.FC<AdminAccountModalProps> = ({ isOpen, on
     showNotice(res.success ? 'success' : 'error', res.message);
   };
 
+  const copyTextReliable = async (text: string, copyKey: string, successLabel?: string) => {
+    let copied = false;
+    // 1. Synchronous textarea + execCommand('copy') works reliably inside iframes
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.top = '-9999px';
+      textarea.style.left = '-9999px';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      textarea.setSelectionRange(0, text.length);
+      copied = document.execCommand('copy');
+      document.body.removeChild(textarea);
+    } catch {}
+
+    // 2. Also attempt Clipboard API if available
+    if (!copied && navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      } catch {}
+    }
+
+    setCopiedId(copyKey);
+    if (successLabel) {
+      showNotice('success', successLabel);
+    }
+    setTimeout(() => {
+      setCopiedId((prev) => (prev === copyKey ? null : prev));
+    }, 2000);
+  };
+
+  const handleCopyUsername = (acc: UserAccount) => {
+    copyTextReliable(
+      acc.username,
+      `user_${acc.username}`,
+      `Đã sao chép tên tài khoản: ${acc.username}`
+    );
+  };
+
+  const handleCopyPassword = (acc: UserAccount) => {
+    copyTextReliable(
+      acc.password,
+      `pass_${acc.username}`,
+      `Đã sao chép mật khẩu của "${acc.username}": ${acc.password}`
+    );
+  };
+
   const handleCopyCredentials = (acc: UserAccount) => {
     const text = `Tên đăng nhập: ${acc.username} | Mật khẩu: ${acc.password} | Hạn dùng: ${new Date(
       acc.expiresAt
     ).toLocaleDateString('vi-VN')} (Tối đa ${acc.maxDevices} máy)`;
-    navigator.clipboard?.writeText(text).catch(() => {});
-    setCopiedId(acc.username);
-    setTimeout(() => setCopiedId(null), 2000);
+    copyTextReliable(
+      text,
+      `all_${acc.username}`,
+      `Đã sao chép trọn bộ thông tin tài khoản "${acc.username}"!`
+    );
   };
 
   const startEditing = (acc: UserAccount) => {
@@ -457,18 +511,42 @@ export const AdminAccountModal: React.FC<AdminAccountModalProps> = ({ isOpen, on
 
                         {/* Username & Password */}
                         <td className="py-3 px-4 align-middle">
-                          <div className="space-y-1">
+                          <div className="space-y-1.5">
+                            {/* Username Row with dedicated Copy button */}
                             <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] font-bold text-slate-400 uppercase w-14">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase w-16 shrink-0">
                                 Tài khoản:
                               </span>
-                              <span className="font-mono font-extrabold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                              <span
+                                onClick={() => handleCopyUsername(acc)}
+                                className="font-mono font-extrabold text-slate-900 bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded border border-slate-200 select-all cursor-pointer transition-colors"
+                                title="Bấm để sao chép tên tài khoản"
+                              >
                                 {acc.username}
                               </span>
+                              <button
+                                type="button"
+                                onClick={() => handleCopyUsername(acc)}
+                                className="px-1.5 py-0.5 text-indigo-600 hover:bg-indigo-50 border border-indigo-200/70 rounded cursor-pointer flex items-center gap-1 text-[10px] font-extrabold transition-colors"
+                                title="Sao chép tên tài khoản"
+                              >
+                                {copiedId === `user_${acc.username}` ? (
+                                  <>
+                                    <Check size={12} className="text-emerald-600" />
+                                    <span className="text-emerald-600">Đã chép TK</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy size={12} />
+                                    <span>Copy TK</span>
+                                  </>
+                                )}
+                              </button>
                             </div>
 
+                            {/* Password Row with dedicated Copy button */}
                             <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] font-bold text-slate-400 uppercase w-14">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase w-16 shrink-0">
                                 Mật khẩu:
                               </span>
                               {isEditing ? (
@@ -479,7 +557,11 @@ export const AdminAccountModal: React.FC<AdminAccountModalProps> = ({ isOpen, on
                                   className="px-2 py-0.5 rounded border border-indigo-400 font-mono font-bold text-xs w-28"
                                 />
                               ) : (
-                                <span className="font-mono font-extrabold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">
+                                <span
+                                  onClick={() => handleCopyPassword(acc)}
+                                  className="font-mono font-extrabold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-2 py-0.5 rounded border border-indigo-200 select-all cursor-pointer transition-colors"
+                                  title="Bấm để sao chép mật khẩu"
+                                >
                                   {isPassShown ? acc.password : '••••••••'}
                                 </span>
                               )}
@@ -495,19 +577,38 @@ export const AdminAccountModal: React.FC<AdminAccountModalProps> = ({ isOpen, on
 
                               <button
                                 type="button"
-                                onClick={() => handleCopyCredentials(acc)}
-                                className="p-1 text-indigo-600 hover:bg-indigo-50 rounded cursor-pointer flex items-center gap-0.5 text-[10px] font-bold"
-                                title="Sao chép Tên đăng nhập & Mật khẩu"
+                                onClick={() => handleCopyPassword(acc)}
+                                className="px-1.5 py-0.5 text-indigo-600 hover:bg-indigo-50 border border-indigo-200/70 rounded cursor-pointer flex items-center gap-1 text-[10px] font-extrabold transition-colors"
+                                title="Sao chép mật khẩu"
                               >
-                                {copiedId === acc.username ? (
+                                {copiedId === `pass_${acc.username}` ? (
                                   <>
-                                    <Check size={13} className="text-emerald-600" />
-                                    <span className="text-emerald-600">Đã chép</span>
+                                    <Check size={12} className="text-emerald-600" />
+                                    <span className="text-emerald-600">Đã chép MK</span>
                                   </>
                                 ) : (
                                   <>
-                                    <Copy size={13} />
-                                    <span>Copy</span>
+                                    <Copy size={12} />
+                                    <span>Copy MK</span>
+                                  </>
+                                )}
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleCopyCredentials(acc)}
+                                className="px-1.5 py-0.5 text-slate-600 hover:bg-slate-100 border border-slate-200 rounded cursor-pointer flex items-center gap-1 text-[10px] font-bold transition-colors"
+                                title="Sao chép cả Tài khoản & Mật khẩu để gửi cho giáo viên"
+                              >
+                                {copiedId === `all_${acc.username}` ? (
+                                  <>
+                                    <Check size={12} className="text-emerald-600" />
+                                    <span className="text-emerald-600">Đã chép cả 2</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy size={12} />
+                                    <span>Copy cả 2</span>
                                   </>
                                 )}
                               </button>

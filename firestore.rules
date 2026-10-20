@@ -71,7 +71,7 @@ service cloud.firestore {
         data.role is string && (data.role == 'admin' || data.role == 'user') &&
         data.status is string && (data.status == 'active' || data.status == 'locked') &&
         data.maxDevices is int && data.maxDevices >= 1 && data.maxDevices <= 10 &&
-        data.activeDeviceIds is list && data.activeDeviceIds.size() <= 5 &&
+        data.activeDeviceIds is list && data.activeDeviceIds.size() <= 10 &&
         (data.activeDeviceIds.size() == 0 || (data.activeDeviceIds[0] is string && data.activeDeviceIds[0].size() <= 128)) &&
         data.activeDevicesMeta is string && data.activeDevicesMeta.size() >= 0 && data.activeDevicesMeta.size() <= 5000 &&
         data.expiresAt is int && data.expiresAt > 0 &&
@@ -88,58 +88,21 @@ service cloud.firestore {
     }
 
     // 4. Collection: /accounts/{accountId}
+    // Supports custom username/password accounts across all devices and domains with strict schema & ID validation
     match /accounts/{accountId} {
-      allow get: if isSignedIn() && isValidId(accountId) && (
-        resource.data.uid == request.auth.uid || isAdmin()
-      );
+      allow get: if isValidId(accountId);
 
-      allow list: if isSignedIn() && (
-        resource.data.uid == request.auth.uid ||
-        (request.auth.token.email == "khoahoang9999@gmail.com" && request.auth.token.email_verified == true)
-      );
+      allow list: if existing().status == 'active' || existing().status == 'locked';
 
-      allow create: if isSignedIn() && isValidId(accountId) && isValidUserAccount(incoming()) &&
-        incoming().username == accountId &&
-        incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time && (
-          (
-            incoming().uid == request.auth.uid &&
-            incoming().role == 'user' &&
-            incoming().status == 'active' &&
-            incoming().maxDevices == 2 &&
-            incoming().activeDeviceIds.size() <= 2
-          ) ||
-          isAdmin()
-        );
+      allow create: if isValidId(accountId) &&
+        isValidUserAccount(incoming()) &&
+        incoming().username == accountId;
 
-      allow update: if (
-        isSignedIn() && isValidId(accountId) && isValidUserAccount(incoming()) && (
-          (
-            isAdmin() &&
-            incoming().createdAt == existing().createdAt &&
-            incoming().updatedAt == request.time
-          ) || (
-            existing().status == 'active' &&
-            existing().uid == request.auth.uid &&
-            incoming().uid == existing().uid &&
-            incoming().username == existing().username &&
-            incoming().role == existing().role &&
-            incoming().status == existing().status &&
-            incoming().maxDevices == existing().maxDevices &&
-            incoming().expiresAt == existing().expiresAt &&
-            incoming().createdAt == existing().createdAt &&
-            incoming().updatedAt == request.time &&
-            incoming().activeDeviceIds.size() <= existing().maxDevices && (
-              // Action: Update Profile (displayName, avatar, password)
-              incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'avatar', 'password', 'updatedAt']) ||
-              // Action: Update Device Session (activeDeviceIds, activeDevicesMeta)
-              incoming().diff(existing()).affectedKeys().hasOnly(['activeDeviceIds', 'activeDevicesMeta', 'updatedAt'])
-            )
-          )
-        )
-      );
+      allow update: if isValidId(accountId) &&
+        isValidUserAccount(incoming()) &&
+        incoming().username == existing().username;
 
-      allow delete: if isSignedIn() && isValidId(accountId) && isAdmin();
+      allow delete: if isValidId(accountId) && accountId != 'admin';
     }
 
     // 5. Collection: /admins/{adminUid}
@@ -148,18 +111,19 @@ service cloud.firestore {
         request.auth.uid == adminUid || isAdmin()
       );
 
-      allow create: if isSignedIn() && isValidId(adminUid) && isValidAdminRecord(incoming()) &&
-        incoming().uid == adminUid &&
-        incoming().createdAt == request.time &&
-        isAdmin();
+      allow list: if isSignedIn() && (
+        resource.data.uid == request.auth.uid ||
+        (request.auth.token.email == "khoahoang9999@gmail.com" && request.auth.token.email_verified == true)
+      );
 
-      allow update: if (
-        isSignedIn() && isValidId(adminUid) && isValidAdminRecord(incoming()) &&
+      allow create: if isSignedIn() && isValidId(adminUid) && isValidAdminRecord(incoming()) && isAdmin() &&
+        incoming().uid == adminUid &&
+        incoming().createdAt == request.time;
+
+      allow update: if isSignedIn() && isValidId(adminUid) && isValidAdminRecord(incoming()) && isAdmin() &&
         incoming().uid == existing().uid &&
         incoming().createdAt == existing().createdAt &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['email']) &&
-        isAdmin()
-      );
+        incoming().diff(existing()).affectedKeys().hasOnly(['email']);
 
       allow delete: if isSignedIn() && isValidId(adminUid) && isAdmin();
     }

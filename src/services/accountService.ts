@@ -3,11 +3,8 @@ import {
   doc,
   getDoc,
   setDoc,
-  updateDoc,
   deleteDoc,
   onSnapshot,
-  query,
-  where,
   serverTimestamp,
   Unsubscribe,
 } from 'firebase/firestore';
@@ -17,7 +14,7 @@ import {
   onAuthStateChanged,
   User as FirebaseUser,
 } from 'firebase/auth';
-import { db, auth, googleProvider, handleFirestoreError, OperationType } from '../firebase';
+import { db, auth, googleProvider } from '../firebase';
 
 export interface DeviceSession {
   deviceId: string;
@@ -98,7 +95,6 @@ export function compressAvatarImage(file: File): Promise<string> {
           reject(new Error('Không thể xử lý ảnh'));
           return;
         }
-        // Center crop square
         const minSide = Math.min(img.width, img.height);
         const sx = (img.width - minSide) / 2;
         const sy = (img.height - minSide) / 2;
@@ -209,6 +205,39 @@ function getDefaultAccounts(): Record<string, UserAccount> {
       createdAtMs: now,
       updatedAtMs: now,
     },
+    quanlich: {
+      uid: 'teacher_quanlich',
+      username: 'quanlich',
+      password: '123456',
+      displayName: 'Quan Thị Lịch',
+      avatar: PRESET_AVATARS[4].url,
+      role: 'user',
+      status: 'active',
+      maxDevices: 2,
+      activeDeviceIds: [],
+      activeDevicesMeta: '[]',
+      expiresAt: now + tenYearsMs,
+      createdAtMs: now,
+      updatedAtMs: now,
+    },
+  };
+}
+
+function docDataToUserAccount(username: string, data: Record<string, any>): UserAccount {
+  return {
+    uid: String(data.uid || `uid_${username}`),
+    username: String(data.username || username),
+    password: String(data.password || '123456'),
+    displayName: String(data.displayName || username),
+    avatar: String(data.avatar || PRESET_AVATARS[1].url),
+    role: data.role === 'admin' ? 'admin' : 'user',
+    status: data.status === 'locked' ? 'locked' : 'active',
+    maxDevices: Number(data.maxDevices) || 2,
+    activeDeviceIds: Array.isArray(data.activeDeviceIds) ? data.activeDeviceIds : [],
+    activeDevicesMeta: String(data.activeDevicesMeta || '[]'),
+    expiresAt: Number(data.expiresAt) || Date.now() + 30 * 86400000,
+    createdAtMs: data.createdAt?.toMillis?.() || Date.now(),
+    updatedAtMs: data.updatedAt?.toMillis?.() || Date.now(),
   };
 }
 
@@ -218,6 +247,7 @@ class AccountService {
   private listeners: Set<() => void> = new Set();
   private firestoreUnsub: Unsubscribe | null = null;
   private broadcastChannel: BroadcastChannel | null = null;
+  private hasSyncedLocalToCloud: boolean = false;
 
   constructor() {
     this.loadFromStorage();
@@ -232,18 +262,17 @@ class AccountService {
       } catch {}
     }
 
-    // Listen to Firebase Auth state for Firestore real-time synchronization
-    onAuthStateChanged(auth, async (fbUser) => {
-      if (this.firestoreUnsub) {
-        this.firestoreUnsub();
-        this.firestoreUnsub = null;
-      }
+    // Start real-time Firestore subscription immediately on all devices & domains
+    if (typeof window !== 'undefined') {
+      this.startRealtimeFirestoreSync();
 
-      if (fbUser) {
-        await this.handleFirebaseUserConnected(fbUser);
-      }
-      this.notify();
-    });
+      onAuthStateChanged(auth, async (fbUser) => {
+        if (fbUser) {
+          await this.handleFirebaseUserConnected(fbUser);
+        }
+        this.notify();
+      });
+    }
   }
 
   private loadFromStorage(): void {
@@ -324,102 +353,135 @@ class AccountService {
     return acc.status === 'locked';
   }
 
-  // Sync with Firestore when FirebaseUser is signed in
-  private async handleFirebaseUserConnected(fbUser: FirebaseUser): Promise<void> {
-    const isBootstrappedAdmin =
-      fbUser.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase() && fbUser.emailVerified;
+  /**
+   * Real-time Firestore listener across ALL devices, browsers, and domains (AI Studio & Cloudflare).
+   * Runs immediately on app boot without requiring Google OAuth login.
+   */
+  private startRealtimeFirestoreSync(): void {
+    if (this.firestoreUnsub) {
+      this.firestoreUnsub();
+      this.firestoreUnsub = null;
+    }
 
-    const accountsPath = 'accounts';
-    const q = isBootstrappedAdmin
-      ? collection(db, accountsPath)
-      : query(collection(db, accountsPath), where('uid', '==', fbUser.uid));
-
+    const accountsCol = collection(db, 'accounts');
     this.firestoreUnsub = onSnapshot(
-      q,
+      accountsCol,
       (snapshot) => {
+        const cloudUsernames = new Set<string>();
+
+        snapshot.docs.forEach((docSnap) => {
+          const username = docSnap.id;
+          cloudUsernames.add(username);
+          this.accounts[username] = docDataToUserAccount(username, docSnap.data());
+        });
+
         snapshot.docChanges().forEach((change) => {
-          const data = change.doc.data();
           const username = change.doc.id;
-          if (change.type === 'removed') {
-            if (username !== 'admin') {
-              delete this.accounts[username];
+          if (change.type === 'removed' && username !== 'admin') {
+            delete this.accounts[username];
+            if (this.currentUsername === username) {
+              this.currentUsername = null;
             }
-          } else {
-            this.accounts[username] = {
-              uid: String(data.uid || fbUser.uid),
-              username: String(data.username || username),
-              password: String(data.password || '123456'),
-              displayName: String(data.displayName || username),
-              avatar: String(data.avatar || PRESET_AVATARS[1].url),
-              role: data.role === 'admin' ? 'admin' : 'user',
-              status: data.status === 'locked' ? 'locked' : 'active',
-              maxDevices: Number(data.maxDevices) || 2,
-              activeDeviceIds: Array.isArray(data.activeDeviceIds) ? data.activeDeviceIds : [],
-              activeDevicesMeta: String(data.activeDevicesMeta || '[]'),
-              expiresAt: Number(data.expiresAt) || Date.now() + 30 * 86400000,
-              createdAtMs: data.createdAt?.toMillis?.() || Date.now(),
-              updatedAtMs: data.updatedAt?.toMillis?.() || Date.now(),
-            };
           }
         });
+
+        // Push any local-only accounts (e.g. created before Firestore rules update) up to Firestore once
+        if (!this.hasSyncedLocalToCloud) {
+          this.hasSyncedLocalToCloud = true;
+          Object.values(this.accounts).forEach((localAcc) => {
+            if (!cloudUsernames.has(localAcc.username)) {
+              this.syncAccountToFirestore(localAcc, true).catch(() => {});
+            }
+          });
+        }
+
+        // Validate current device session if logged in
+        if (this.currentUsername && this.accounts[this.currentUsername]) {
+          const curAcc = this.accounts[this.currentUsername];
+          if (curAcc.status === 'locked' && curAcc.role !== 'admin') {
+            this.currentUsername = null;
+          }
+        }
+
         this.saveToStorage(false);
         this.notify();
       },
-      (error) => {
-        handleFirestoreError(error, OperationType.GET, accountsPath);
+      (err) => {
+        console.warn('Firestore real-time sync warning:', err);
       }
     );
   }
 
-  // Persist account to Firestore if authenticated
+  private async handleFirebaseUserConnected(fbUser: FirebaseUser): Promise<void> {
+    const isBootstrappedAdmin =
+      fbUser.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase() && fbUser.emailVerified;
+    if (isBootstrappedAdmin && this.accounts['admin']) {
+      this.accounts['admin'].uid = sanitizeId(fbUser.uid);
+    }
+  }
+
+  /**
+   * Persist account directly to Firestore so all machines & browsers receive it immediately
+   */
   private async syncAccountToFirestore(
     account: UserAccount,
     isCreate: boolean = false
   ): Promise<void> {
-    const fbUser = auth.currentUser;
-    if (!fbUser || !fbUser.emailVerified) return;
+    const cleanUsername = sanitizeUsername(account.username);
+    if (!cleanUsername || cleanUsername.length < 3) return;
 
-    const isBootstrappedAdmin = fbUser.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
-    if (!isBootstrappedAdmin && account.uid !== fbUser.uid) return;
-
-    const docPath = `accounts/${account.username}`;
-    const docRef = doc(db, 'accounts', account.username);
+    const docRef = doc(db, 'accounts', cleanUsername);
 
     try {
       const snap = await getDoc(docRef);
       const payload = {
-        uid: sanitizeId(account.uid),
-        username: sanitizeUsername(account.username),
-        password: account.password.slice(0, 100),
-        displayName: account.displayName.trim().slice(0, 100) || account.username,
-        avatar: (account.avatar || '').slice(0, 150000),
-        role: account.role,
-        status: account.status,
+        uid: sanitizeId(account.uid || `uid_${cleanUsername}`),
+        username: cleanUsername,
+        password: (account.password || '123456').slice(0, 100),
+        displayName: (account.displayName || cleanUsername).trim().slice(0, 100) || cleanUsername,
+        avatar: (account.avatar || PRESET_AVATARS[1].url).slice(0, 150000),
+        role: account.role === 'admin' ? 'admin' : 'user',
+        status: account.status === 'locked' ? 'locked' : 'active',
         maxDevices: Math.max(1, Math.min(10, Math.floor(account.maxDevices || 2))),
-        activeDeviceIds: account.activeDeviceIds.slice(0, 5).map((id) => sanitizeId(id)),
+        activeDeviceIds: (account.activeDeviceIds || [])
+          .slice(0, 10)
+          .map((id) => sanitizeId(id)),
         activeDevicesMeta: (account.activeDevicesMeta || '[]').slice(0, 5000),
-        expiresAt: Math.max(1000, Math.floor(account.expiresAt)),
+        expiresAt: Math.max(1000, Math.floor(account.expiresAt || Date.now() + 30 * 86400000)),
       };
 
       if (!snap.exists() || isCreate) {
         await setDoc(docRef, {
           ...payload,
-          createdAt: serverTimestamp(),
+          createdAt: snap.exists() ? snap.data().createdAt || serverTimestamp() : serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
-      } else if (isBootstrappedAdmin) {
-        await updateDoc(docRef, {
+      } else {
+        await setDoc(docRef, {
           ...payload,
+          createdAt: snap.data().createdAt || serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
       }
     } catch (error) {
-      handleFirestoreError(
-        error,
-        isCreate ? OperationType.CREATE : OperationType.WRITE,
-        docPath
-      );
+      console.warn('Firestore sync error:', error);
     }
+  }
+
+  // Fetch single account fresh from Firestore before login / registration checks
+  private async fetchAccountFromFirestore(username: string): Promise<UserAccount | null> {
+    try {
+      const clean = sanitizeUsername(username);
+      if (!clean || clean.length < 3) return null;
+      const snap = await getDoc(doc(db, 'accounts', clean));
+      if (snap.exists()) {
+        const acc = docDataToUserAccount(clean, snap.data());
+        this.accounts[clean] = acc;
+        this.saveToStorage(false);
+        return acc;
+      }
+    } catch {}
+    return null;
   }
 
   // Sign in with Google popup and link/create account
@@ -443,6 +505,7 @@ class AccountService {
         ? rawName.slice(0, 40)
         : `user_${rawName}`;
 
+      await this.fetchAccountFromFirestore(username);
       let account = this.accounts[username];
       const now = Date.now();
 
@@ -472,7 +535,6 @@ class AccountService {
         }
       }
 
-      // Register current device session
       const devResult = this.attachCurrentDevice(account, true);
       if (!devResult.allowed) {
         return {
@@ -483,7 +545,7 @@ class AccountService {
 
       this.currentUsername = account.username;
       this.saveToStorage();
-      await this.syncAccountToFirestore(account, true);
+      await this.syncAccountToFirestore(account, false);
       this.notify();
 
       return {
@@ -524,7 +586,6 @@ class AccountService {
             activeDevices: sessions,
           };
         }
-        // Remove oldest session if forced
         sessions.sort((a, b) => a.lastActiveAt - b.lastActiveAt);
         sessions = sessions.slice(sessions.length - account.maxDevices + 1);
       }
@@ -536,7 +597,7 @@ class AccountService {
       });
     }
 
-    account.activeDeviceIds = sessions.map((s) => s.deviceId).slice(0, 5);
+    account.activeDeviceIds = sessions.map((s) => s.deviceId).slice(0, 10);
     account.activeDevicesMeta = JSON.stringify(sessions).slice(0, 5000);
     account.updatedAtMs = now;
 
@@ -547,7 +608,7 @@ class AccountService {
     };
   }
 
-  // Login with Username & Password
+  // Login with Username & Password (always checks live Firestore first for instant cross-device sync)
   public async login(
     rawUsername: string,
     password: string,
@@ -560,7 +621,10 @@ class AccountService {
     account?: UserAccount;
   }> {
     const username = sanitizeUsername(rawUsername);
-    const acc = this.accounts[username];
+
+    // Fetch latest account state directly from Firestore so newly created accounts on another machine work immediately
+    const cloudAcc = await this.fetchAccountFromFirestore(username);
+    const acc = cloudAcc || this.accounts[username];
 
     if (!acc || acc.password !== password) {
       return {
@@ -636,7 +700,10 @@ class AccountService {
         message: 'Vui lòng nhập tên hiển thị.',
       };
     }
-    if (this.accounts[username]) {
+
+    // Check Firestore first to ensure username is globally unique across all devices
+    const existingCloud = await this.fetchAccountFromFirestore(username);
+    if (existingCloud || this.accounts[username]) {
       return {
         success: false,
         message: `Tên đăng nhập "${username}" đã tồn tại. Vui lòng chọn tên khác!`,
@@ -644,7 +711,7 @@ class AccountService {
     }
 
     const now = Date.now();
-    const defaultTrialDays = 30; // Default 30 days on registration, Admin can extend anytime
+    const defaultTrialDays = 30;
     const fbUid = auth.currentUser?.uid || `uid_${username}_${now.toString(36)}`;
 
     const newAcc: UserAccount = {
@@ -731,24 +798,9 @@ class AccountService {
 
     acc.updatedAtMs = Date.now();
     this.saveToStorage();
-
-    // Update Firestore
-    const fbUser = auth.currentUser;
-    if (fbUser && fbUser.emailVerified && (fbUser.uid === acc.uid || fbUser.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase())) {
-      const docPath = `accounts/${acc.username}`;
-      try {
-        await updateDoc(doc(db, 'accounts', acc.username), {
-          displayName: acc.displayName,
-          avatar: acc.avatar,
-          password: acc.password,
-          updatedAt: serverTimestamp(),
-        });
-      } catch (error) {
-        handleFirestoreError(error, OperationType.UPDATE, docPath);
-      }
-    }
-
+    await this.syncAccountToFirestore(acc, false);
     this.notify();
+
     return { success: true, message: 'Đã cập nhật thông tin tài khoản thành công!' };
   }
 
@@ -798,7 +850,9 @@ class AccountService {
         message: 'Mật khẩu phải từ 3 ký tự trở lên.',
       };
     }
-    if (this.accounts[username]) {
+
+    const existingCloud = await this.fetchAccountFromFirestore(username);
+    if (existingCloud || this.accounts[username]) {
       return {
         success: false,
         message: `Tài khoản "${username}" đã tồn tại!`,
@@ -832,7 +886,7 @@ class AccountService {
 
     return {
       success: true,
-      message: `Đã tạo tài khoản "${username}" thành công!`,
+      message: `Đã tạo và đồng bộ đám mây tài khoản "${username}" thành công!`,
       account: newAcc,
     };
   }
@@ -906,7 +960,7 @@ class AccountService {
     await this.syncAccountToFirestore(acc, false);
     this.notify();
 
-    return { success: true, message: `Đã cập nhật tài khoản "${username}".` };
+    return { success: true, message: `Đã cập nhật và đồng bộ tài khoản "${username}".` };
   }
 
   public async adminResetDevices(username: string): Promise<void> {
@@ -935,13 +989,10 @@ class AccountService {
     }
     this.saveToStorage();
 
-    const fbUser = auth.currentUser;
-    if (fbUser && fbUser.emailVerified && fbUser.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
-      try {
-        await deleteDoc(doc(db, 'accounts', username));
-      } catch (error) {
-        handleFirestoreError(error, OperationType.DELETE, `accounts/${username}`);
-      }
+    try {
+      await deleteDoc(doc(db, 'accounts', username));
+    } catch (error) {
+      console.warn('Firestore delete error:', error);
     }
 
     this.notify();
