@@ -172,7 +172,6 @@ export function sanitizeId(raw: string): string {
 function getDefaultAccounts(): Record<string, UserAccount> {
   const now = Date.now();
   const tenYearsMs = 10 * 365 * 24 * 60 * 60 * 1000;
-  const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
 
   return {
     admin: {
@@ -190,52 +189,64 @@ function getDefaultAccounts(): Record<string, UserAccount> {
       createdAtMs: now,
       updatedAtMs: now,
     },
-    giaovien1: {
-      uid: 'teacher_demo_1',
-      username: 'giaovien1',
-      password: '123456',
-      displayName: 'Cô Nguyễn Thị Lan',
-      avatar: PRESET_AVATARS[2].url,
-      role: 'user',
-      status: 'active',
-      maxDevices: 2,
-      activeDeviceIds: [],
-      activeDevicesMeta: '[]',
-      expiresAt: now + thirtyDaysMs,
-      createdAtMs: now,
-      updatedAtMs: now,
-    },
-    quanlich: {
-      uid: 'teacher_quanlich',
-      username: 'quanlich',
-      password: '123456',
-      displayName: 'Quan Thị Lịch',
-      avatar: PRESET_AVATARS[4].url,
-      role: 'user',
-      status: 'active',
-      maxDevices: 2,
-      activeDeviceIds: [],
-      activeDevicesMeta: '[]',
-      expiresAt: now + tenYearsMs,
-      createdAtMs: now,
-      updatedAtMs: now,
-    },
   };
 }
 
+const DELETED_ACCOUNTS_STORAGE_KEY = 'classroom_deleted_accounts_v1';
+
+/**
+ * Calculate remaining days strictly by calendar date (midnight-to-midnight)
+ * so that all accounts expiring on the same calendar date (e.g. 20/10/2027)
+ * always display the exact same number of days (e.g. 365 days), regardless of the hour/minute they were created or edited.
+ */
+export function getRemainingDays(expiresAt: number): number {
+  const now = new Date();
+  const todayMidnight = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const exp = new Date(expiresAt);
+  const expMidnight = Date.UTC(exp.getFullYear(), exp.getMonth(), exp.getDate());
+  return Math.round((expMidnight - todayMidnight) / 86400000);
+}
+
+/**
+ * Compute expiration timestamp at 23:59:59.999 of (today + days) calendar days
+ * so that getRemainingDays(computeExpiresAtFromDays(365)) is always exact 365.
+ */
+export function computeExpiresAtFromDays(days: number): number {
+  const cleanDays = Math.max(1, Math.round(Number(days) || 30));
+  const now = new Date();
+  const target = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() + cleanDays,
+    23,
+    59,
+    59,
+    999
+  );
+  return target.getTime();
+}
+
 function docDataToUserAccount(username: string, data: Record<string, any>): UserAccount {
+  const role = data.role === 'admin' ? 'admin' : 'user';
+  let expiresAt = Number(data.expiresAt) || computeExpiresAtFromDays(30);
+  // Fix legacy 3650-day bug on non-admin accounts that got 10 years instead of 365 days
+  const daysRemaining = getRemainingDays(expiresAt);
+  if (role !== 'admin' && daysRemaining > 3000) {
+    expiresAt = computeExpiresAtFromDays(365);
+  }
+
   return {
     uid: String(data.uid || `uid_${username}`),
     username: String(data.username || username),
     password: String(data.password || '123456'),
     displayName: String(data.displayName || username),
     avatar: String(data.avatar || PRESET_AVATARS[1].url),
-    role: data.role === 'admin' ? 'admin' : 'user',
+    role,
     status: data.status === 'locked' ? 'locked' : 'active',
     maxDevices: Number(data.maxDevices) || 2,
     activeDeviceIds: Array.isArray(data.activeDeviceIds) ? data.activeDeviceIds : [],
     activeDevicesMeta: String(data.activeDevicesMeta || '[]'),
-    expiresAt: Number(data.expiresAt) || Date.now() + 30 * 86400000,
+    expiresAt,
     createdAtMs: data.createdAt?.toMillis?.() || Date.now(),
     updatedAtMs: data.updatedAt?.toMillis?.() || Date.now(),
   };
@@ -247,7 +258,8 @@ class AccountService {
   private listeners: Set<() => void> = new Set();
   private firestoreUnsub: Unsubscribe | null = null;
   private broadcastChannel: BroadcastChannel | null = null;
-  private hasSyncedLocalToCloud: boolean = false;
+  private deletedUsernames: Set<string> = new Set();
+  private pendingDeletes: Set<string> = new Set();
 
   constructor() {
     this.loadFromStorage();
@@ -287,11 +299,23 @@ class AccountService {
 
   private loadFromStorage(): void {
     try {
+      const rawDeleted = localStorage.getItem(DELETED_ACCOUNTS_STORAGE_KEY);
+      if (rawDeleted) {
+        const parsedDel = JSON.parse(rawDeleted);
+        if (Array.isArray(parsedDel)) {
+          this.deletedUsernames = new Set(parsedDel);
+        }
+      }
+
       const raw = localStorage.getItem(ACCOUNTS_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === 'object') {
-          this.accounts = { ...getDefaultAccounts(), ...parsed };
+          const merged: Record<string, UserAccount> = { ...getDefaultAccounts(), ...parsed };
+          this.deletedUsernames.forEach((u) => {
+            if (u !== 'admin') delete merged[u];
+          });
+          this.accounts = merged;
         } else {
           this.accounts = getDefaultAccounts();
         }
@@ -302,7 +326,15 @@ class AccountService {
 
       const savedUser = localStorage.getItem(CURRENT_USER_STORAGE_KEY);
       if (savedUser && this.accounts[savedUser]) {
-        this.currentUsername = savedUser;
+        const acc = this.accounts[savedUser];
+        const isExpired = acc.role !== 'admin' && Date.now() > acc.expiresAt;
+        const isLocked = acc.role !== 'admin' && acc.status === 'locked';
+        if (isExpired || isLocked) {
+          this.currentUsername = null;
+          localStorage.removeItem(CURRENT_USER_STORAGE_KEY);
+        } else {
+          this.currentUsername = savedUser;
+        }
       } else {
         this.currentUsername = null;
       }
@@ -313,6 +345,10 @@ class AccountService {
 
   private saveToStorage(broadcast: boolean = true): void {
     try {
+      localStorage.setItem(
+        DELETED_ACCOUNTS_STORAGE_KEY,
+        JSON.stringify(Array.from(this.deletedUsernames))
+      );
       localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(this.accounts));
       if (this.currentUsername) {
         localStorage.setItem(CURRENT_USER_STORAGE_KEY, this.currentUsername);
@@ -346,7 +382,12 @@ class AccountService {
 
   public getCurrentAccount(): UserAccount | null {
     if (!this.currentUsername) return null;
-    return this.accounts[this.currentUsername] || null;
+    const acc = this.accounts[this.currentUsername] || null;
+    if (!acc) return null;
+    if (acc.role !== 'admin' && (acc.status === 'locked' || Date.now() > acc.expiresAt)) {
+      return null;
+    }
+    return acc;
   }
 
   public isCurrentAccountExpired(): boolean {
@@ -359,8 +400,24 @@ class AccountService {
   public isCurrentAccountLocked(): boolean {
     const acc = this.getCurrentAccount();
     if (!acc) return false;
-    if (acc.role === 'admin') return false;
+    if (acc.role !== 'admin') return false;
     return acc.status === 'locked';
+  }
+
+  private validateActiveSession(): void {
+    if (!this.currentUsername) return;
+    const curAcc = this.accounts[this.currentUsername];
+    if (!curAcc) {
+      this.currentUsername = null;
+      return;
+    }
+    const isExpired = curAcc.role !== 'admin' && Date.now() > curAcc.expiresAt;
+    const isLocked = curAcc.role !== 'admin' && curAcc.status === 'locked';
+    const isDeviceRemoved =
+      curAcc.activeDeviceIds.length > 0 && !curAcc.activeDeviceIds.includes(getDeviceId());
+    if (isExpired || isLocked || isDeviceRemoved) {
+      this.currentUsername = null;
+    }
   }
 
   /**
@@ -370,26 +427,27 @@ class AccountService {
     try {
       const { getDocs } = await import('firebase/firestore');
       const snap = await getDocs(collection(db, 'accounts'));
-      if (snap.empty) return;
 
       const cloudMap: Record<string, UserAccount> = {};
       snap.docs.forEach((docSnap) => {
         const username = docSnap.id;
+        if (this.pendingDeletes.has(username) || this.deletedUsernames.has(username)) {
+          if (username !== 'admin') {
+            deleteDoc(doc(db, 'accounts', username)).catch(() => {});
+            return;
+          }
+        }
         cloudMap[username] = docDataToUserAccount(username, docSnap.data());
       });
 
-      // Upload any local-only accounts once on initial boot
-      if (!this.hasSyncedLocalToCloud) {
-        this.hasSyncedLocalToCloud = true;
-        for (const localAcc of Object.values(this.accounts)) {
-          if (!cloudMap[localAcc.username]) {
-            await this.syncAccountToFirestore(localAcc, true);
-            cloudMap[localAcc.username] = localAcc;
-          }
-        }
+      // Ensure root admin exists in Firestore
+      if (!cloudMap['admin'] && this.accounts['admin']) {
+        await this.syncAccountToFirestore(this.accounts['admin'], true);
+        cloudMap['admin'] = this.accounts['admin'];
       }
 
       this.accounts = { ...getDefaultAccounts(), ...cloudMap };
+      this.validateActiveSession();
       this.saveToStorage(false);
       this.notify();
     } catch (err) {
@@ -411,41 +469,24 @@ class AccountService {
     this.firestoreUnsub = onSnapshot(
       accountsCol,
       (snapshot) => {
-        const cloudUsernames = new Set<string>();
+        const nextAccounts: Record<string, UserAccount> = { ...getDefaultAccounts() };
 
         snapshot.docs.forEach((docSnap) => {
           const username = docSnap.id;
-          cloudUsernames.add(username);
-          this.accounts[username] = docDataToUserAccount(username, docSnap.data());
-        });
-
-        snapshot.docChanges().forEach((change) => {
-          const username = change.doc.id;
-          if (change.type === 'removed' && username !== 'admin') {
-            delete this.accounts[username];
-            if (this.currentUsername === username) {
-              this.currentUsername = null;
-            }
+          if (
+            username !== 'admin' &&
+            (this.pendingDeletes.has(username) || this.deletedUsernames.has(username))
+          ) {
+            deleteDoc(doc(db, 'accounts', username)).catch(() => {});
+            return;
           }
+          nextAccounts[username] = docDataToUserAccount(username, docSnap.data());
         });
 
-        // Push any local-only accounts up to Firestore once
-        if (!this.hasSyncedLocalToCloud) {
-          this.hasSyncedLocalToCloud = true;
-          Object.values(this.accounts).forEach((localAcc) => {
-            if (!cloudUsernames.has(localAcc.username)) {
-              this.syncAccountToFirestore(localAcc, true).catch(() => {});
-            }
-          });
-        }
+        this.accounts = nextAccounts;
 
         // Validate current device session if logged in
-        if (this.currentUsername && this.accounts[this.currentUsername]) {
-          const curAcc = this.accounts[this.currentUsername];
-          if (curAcc.status === 'locked' && curAcc.role !== 'admin') {
-            this.currentUsername = null;
-          }
-        }
+        this.validateActiveSession();
 
         this.saveToStorage(false);
         this.notify();
@@ -517,6 +558,9 @@ class AccountService {
     try {
       const clean = sanitizeUsername(username);
       if (!clean || clean.length < 3) return null;
+      if (this.deletedUsernames.has(clean) || this.pendingDeletes.has(clean)) {
+        return null;
+      }
       const snap = await getDoc(doc(db, 'accounts', clean));
       if (snap.exists()) {
         const acc = docDataToUserAccount(clean, snap.data());
@@ -548,6 +592,9 @@ class AccountService {
         : rawName.length >= 3
         ? rawName.slice(0, 40)
         : `user_${rawName}`;
+
+      this.deletedUsernames.delete(username);
+      this.pendingDeletes.delete(username);
 
       await this.fetchAccountFromFirestore(username);
       let account = this.accounts[username];
@@ -754,6 +801,9 @@ class AccountService {
       };
     }
 
+    this.deletedUsernames.delete(username);
+    this.pendingDeletes.delete(username);
+
     const now = Date.now();
     const defaultTrialDays = 30;
     const fbUid = auth.currentUser?.uid || `uid_${username}_${now.toString(36)}`;
@@ -769,7 +819,7 @@ class AccountService {
       maxDevices: 2,
       activeDeviceIds: [],
       activeDevicesMeta: '[]',
-      expiresAt: now + defaultTrialDays * 86400000,
+      expiresAt: computeExpiresAtFromDays(defaultTrialDays),
       createdAtMs: now,
       updatedAtMs: now,
     };
@@ -903,8 +953,12 @@ class AccountService {
       };
     }
 
+    this.deletedUsernames.delete(username);
+    this.pendingDeletes.delete(username);
+
     const now = Date.now();
-    const expiresAt = now + Math.max(1, params.durationDays) * 86400000;
+    const durationDays = Math.max(1, Math.round(Number(params.durationDays) || 30));
+    const expiresAt = computeExpiresAtFromDays(durationDays);
     const newAcc: UserAccount = {
       uid: sanitizeId(auth.currentUser?.uid || `admin_created_${username}`),
       username,
@@ -925,43 +979,45 @@ class AccountService {
 
     this.accounts[username] = newAcc;
     this.saveToStorage();
+    this.notify();
     await this.syncAccountToFirestore(newAcc, true);
     this.notify();
 
     return {
       success: true,
-      message: `Đã tạo và đồng bộ đám mây tài khoản "${username}" thành công!`,
+      message: `Đã tạo tài khoản "${username}" (${durationDays} ngày) thành công!`,
       account: newAcc,
     };
   }
 
   public async adminExtendAccount(
     username: string,
-    addDays: number,
+    days: number,
     exactTimestamp?: number
   ): Promise<{ success: boolean; message: string }> {
     const acc = this.accounts[username];
     if (!acc) return { success: false, message: 'Không tìm thấy tài khoản.' };
 
     const now = Date.now();
+    const cleanDays = Math.max(1, Math.round(Number(days) || 30));
     if (exactTimestamp !== undefined) {
       acc.expiresAt = exactTimestamp;
     } else {
-      const baseTime = acc.expiresAt > now ? acc.expiresAt : now;
-      acc.expiresAt = baseTime + addDays * 86400000;
+      acc.expiresAt = computeExpiresAtFromDays(cleanDays);
     }
     acc.status = 'active';
     acc.updatedAtMs = now;
 
     this.saveToStorage();
+    this.notify();
     await this.syncAccountToFirestore(acc, false);
     this.notify();
 
     return {
       success: true,
-      message: `Đã gia hạn tài khoản "${username}" đến ${new Date(
+      message: `Đã gia hạn tài khoản "${username}" đúng ${cleanDays} ngày (đến ${new Date(
         acc.expiresAt
-      ).toLocaleDateString('vi-VN')}!`,
+      ).toLocaleDateString('vi-VN')})!`,
     };
   }
 
@@ -1001,6 +1057,7 @@ class AccountService {
 
     acc.updatedAtMs = Date.now();
     this.saveToStorage();
+    this.notify();
     await this.syncAccountToFirestore(acc, false);
     this.notify();
 
@@ -1015,32 +1072,39 @@ class AccountService {
     acc.activeDevicesMeta = '[]';
     acc.updatedAtMs = Date.now();
     this.saveToStorage();
+    this.notify();
     await this.syncAccountToFirestore(acc, false);
     this.notify();
   }
 
   public async adminDeleteAccount(username: string): Promise<{ success: boolean; message: string }> {
-    if (username === 'admin') {
+    const clean = sanitizeUsername(username);
+    if (clean === 'admin') {
       return { success: false, message: 'Không thể xóa tài khoản Admin gốc!' };
     }
-    if (!this.accounts[username]) {
+    if (!this.accounts[clean]) {
       return { success: false, message: 'Tài khoản không tồn tại.' };
     }
 
-    delete this.accounts[username];
-    if (this.currentUsername === username) {
+    this.deletedUsernames.add(clean);
+    this.pendingDeletes.add(clean);
+    delete this.accounts[clean];
+    if (this.currentUsername === clean) {
       this.currentUsername = null;
     }
     this.saveToStorage();
+    this.notify();
 
     try {
-      await deleteDoc(doc(db, 'accounts', username));
+      await deleteDoc(doc(db, 'accounts', clean));
     } catch (error) {
       console.warn('Firestore delete error:', error);
+    } finally {
+      this.pendingDeletes.delete(clean);
     }
 
     this.notify();
-    return { success: true, message: `Đã xóa tài khoản "${username}".` };
+    return { success: true, message: `Đã xóa vĩnh viễn tài khoản "${clean}".` };
   }
 }
 

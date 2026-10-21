@@ -26,6 +26,7 @@ interface AuthModalProps {
   initialTab?: 'login' | 'register';
   onClose: () => void;
   onSuccess?: () => void;
+  isMandatoryGate?: boolean;
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({
@@ -33,6 +34,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   initialTab = 'login',
   onClose,
   onSuccess,
+  isMandatoryGate = false,
 }) => {
   const [activeTab, setActiveTab] = useState<'login' | 'register'>(initialTab);
 
@@ -63,6 +65,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setErrorMsg(null);
       setSuccessMsg(null);
       setConflictDevices(null);
+      accountService.refreshFromCloud();
     }
   }, [isOpen, initialTab]);
 
@@ -99,7 +102,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         setTimeout(() => {
           onSuccess?.();
           onClose();
-        }, 400);
+        }, 300);
       }
     } finally {
       setIsLoading(false);
@@ -132,7 +135,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         setTimeout(() => {
           onSuccess?.();
           onClose();
-        }, 500);
+        }, 400);
       }
     } finally {
       setIsLoading(false);
@@ -152,7 +155,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         setTimeout(() => {
           onSuccess?.();
           onClose();
-        }, 400);
+        }, 300);
       }
     } finally {
       setIsLoading(false);
@@ -160,8 +163,28 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-3 sm:p-4 animate-fade-in">
-      <div className="bg-white border border-slate-200 rounded-3xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[92vh]">
+    <div
+      className={`fixed inset-0 z-50 flex flex-col items-center justify-center p-3 sm:p-4 animate-fade-in ${
+        isMandatoryGate
+          ? 'bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900'
+          : 'bg-slate-950/70 backdrop-blur-xs'
+      }`}
+    >
+      {isMandatoryGate && (
+        <div className="mb-4 text-center text-white space-y-1 max-w-md px-2">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/20 border border-indigo-400/30 text-indigo-200 text-xs font-extrabold mb-1">
+            <span>🎓 Classroom Picker · Hệ Thống Trò Chơi Học Tập</span>
+          </div>
+          <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white">
+            Yêu Cầu Đăng Nhập Hệ Thống
+          </h1>
+          <p className="text-xs text-slate-300">
+            Vui lòng đăng nhập tài khoản được cấp hoặc đăng ký tài khoản mới để vào ứng dụng
+          </p>
+        </div>
+      )}
+
+      <div className="bg-white border border-slate-200 rounded-3xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[88vh]">
         {/* Header */}
         <div className="bg-gradient-to-r from-indigo-600 via-sky-600 to-indigo-700 px-6 py-4 text-white flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2.5">
@@ -173,16 +196,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 {activeTab === 'login' ? 'Đăng Nhập Tài Khoản' : 'Đăng Ký Tài Khoản Mới'}
               </h2>
               <p className="text-[11px] text-indigo-100 font-medium">
-                Hỗ trợ tối đa 2 thiết bị · Bảo mật & Đồng bộ
+                Hỗ trợ tối đa 2 thiết bị · Bảo mật & Đồng bộ Đám mây
               </p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-xl bg-white/10 hover:bg-white/25 text-white transition-colors cursor-pointer"
-          >
-            <X size={18} />
-          </button>
+          {!isMandatoryGate && (
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-xl bg-white/10 hover:bg-white/25 text-white transition-colors cursor-pointer"
+            >
+              <X size={18} />
+            </button>
+          )}
         </div>
 
         {/* Mode Switcher Tabs */}

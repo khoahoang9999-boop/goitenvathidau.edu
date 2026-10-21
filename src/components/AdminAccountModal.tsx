@@ -4,6 +4,7 @@ import {
   UserAccount,
   parseActiveDevices,
   PRESET_AVATARS,
+  getRemainingDays,
 } from '../services/accountService';
 import {
   X,
@@ -382,7 +383,7 @@ export const AdminAccountModal: React.FC<AdminAccountModalProps> = ({ isOpen, on
                   <option value={90}>3 tháng (90 ngày)</option>
                   <option value={180}>6 tháng (180 ngày)</option>
                   <option value={365}>1 năm (365 ngày)</option>
-                  <option value={3650}>Vĩnh viễn (10 năm)</option>
+                  <option value={730}>2 năm (730 ngày)</option>
                 </select>
               </div>
 
@@ -494,7 +495,7 @@ export const AdminAccountModal: React.FC<AdminAccountModalProps> = ({ isOpen, on
                   {filteredAccounts.map((acc) => {
                     const isPassShown = showAllPasswords || visiblePasswords.has(acc.username);
                     const devices = parseActiveDevices(acc);
-                    const daysLeft = Math.ceil((acc.expiresAt - Date.now()) / 86400000);
+                    const daysLeft = getRemainingDays(acc.expiresAt);
                     const isExpired = acc.role !== 'admin' && daysLeft <= 0;
                     const isEditing = editingUsername === acc.username;
 
@@ -694,10 +695,10 @@ export const AdminAccountModal: React.FC<AdminAccountModalProps> = ({ isOpen, on
                                 Gia hạn:
                               </span>
                               {[
-                                { label: '+1 Tháng', days: 30 },
-                                { label: '+3 Tháng', days: 90 },
-                                { label: '+6 Tháng', days: 180 },
-                                { label: '+1 Năm', days: 365 },
+                                { label: '1 Tháng (30 ngày)', days: 30 },
+                                { label: '3 Tháng (90 ngày)', days: 90 },
+                                { label: '6 Tháng (180 ngày)', days: 180 },
+                                { label: '1 Năm (365 ngày)', days: 365 },
                               ].map((btn) => (
                                 <button
                                   key={btn.days}
@@ -838,12 +839,14 @@ export const AdminAccountModal: React.FC<AdminAccountModalProps> = ({ isOpen, on
 
                                     <button
                                       type="button"
-                                      onClick={() => {
-                                        accountService.adminDeleteAccount(acc.username);
-                                        showNotice('success', `Đã xóa tài khoản "${acc.username}"`);
+                                      onClick={async () => {
+                                        const res = await accountService.adminDeleteAccount(
+                                          acc.username
+                                        );
+                                        showNotice(res.success ? 'success' : 'error', res.message);
                                       }}
                                       className="p-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-600 transition-colors cursor-pointer"
-                                      title="Xóa tài khoản"
+                                      title="Xóa vĩnh viễn tài khoản"
                                     >
                                       <Trash2 size={15} />
                                     </button>

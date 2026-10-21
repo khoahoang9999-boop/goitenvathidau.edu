@@ -12,7 +12,8 @@ import {
   loadSavedClasses,
   loadSavedClassesAsync,
   saveClasses,
-  STORAGE_ACTIVE_CLASS_KEY,
+  loadSavedActiveClass,
+  saveActiveClass,
 } from './utils/defaultData';
 import { sound } from './services/sound';
 import { LuckyWheel } from './components/LuckyWheel';
@@ -30,7 +31,12 @@ import { UserProfileModal } from './components/UserProfileModal';
 import { AdminAccountModal } from './components/AdminAccountModal';
 import { PWAInstallButton, OfflineIndicator } from './components/PWAInstallButton';
 import { DataBackupModal } from './components/DataBackupModal';
-import { accountService, UserAccount, PRESET_AVATARS } from './services/accountService';
+import {
+  accountService,
+  UserAccount,
+  PRESET_AVATARS,
+  getRemainingDays,
+} from './services/accountService';
 import {
   Volume2,
   VolumeX,
@@ -59,16 +65,18 @@ import {
 } from 'lucide-react';
 
 export default function App() {
-  const [classes, setClasses] = useState<ClassGroup[]>(() => loadSavedClasses());
-  const [selectedClass, setSelectedClass] = useState<string>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_ACTIVE_CLASS_KEY);
-      if (saved) return saved;
-    } catch {}
-    return 'Lớp 6A1';
-  });
+  // Account & Auth Modal states
+  const [currentAccount, setCurrentAccount] = useState<UserAccount | null>(() =>
+    accountService.getCurrentAccount()
+  );
+  const activeUsername = currentAccount?.username || null;
 
-  const [students, setStudents] = useState<Student[]>(() => loadSavedStudents());
+  const [classes, setClasses] = useState<ClassGroup[]>(() => loadSavedClasses(activeUsername));
+  const [selectedClass, setSelectedClass] = useState<string>(() =>
+    loadSavedActiveClass(activeUsername)
+  );
+  const [students, setStudents] = useState<Student[]>(() => loadSavedStudents(activeUsername));
+
   const [currentMode, setCurrentMode] = useState<GameMode>('wheel');
   const [lastPickerMode, setLastPickerMode] = useState<PickerGameMode>('wheel');
   const [isPickerDropdownOpen, setIsPickerDropdownOpen] = useState<boolean>(false);
@@ -79,6 +87,7 @@ export default function App() {
   const [isBackupModalOpen, setIsBackupModalOpen] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const isInitialDbLoadedRef = useRef<boolean>(false);
+  const loadedUsernameRef = useRef<string | null>(null);
 
   // Repeat prevention & Fly duration settings
   const [noRepeat, setNoRepeat] = useState<boolean>(() => {
@@ -101,10 +110,6 @@ export default function App() {
   const [winnerModalOpen, setWinnerModalOpen] = useState<boolean>(false);
   const [currentWinner, setCurrentWinner] = useState<Student | null>(null);
 
-  // Account & Auth Modal states
-  const [currentAccount, setCurrentAccount] = useState<UserAccount | null>(() =>
-    accountService.getCurrentAccount()
-  );
   const [authModalOpen, setAuthModalOpen] = useState<boolean>(false);
   const [authInitialTab, setAuthInitialTab] = useState<'login' | 'register'>('login');
   const [profileModalOpen, setProfileModalOpen] = useState<boolean>(false);
@@ -120,48 +125,95 @@ export default function App() {
     return accountService.subscribe(syncAccount);
   }, []);
 
-  // Load full student list (including high-res avatars) & classes from IndexedDB on startup
+  // Stop background music and close account modals if user logs out or is not logged in
   useEffect(() => {
+    if (!currentAccount) {
+      sound.stopBgMusic();
+      setIsAccountDropdownOpen(false);
+      setProfileModalOpen(false);
+      setAdminModalOpen(false);
+    }
+  }, [currentAccount]);
+
+  // Load isolated student list & classes for the currently logged-in user account
+  useEffect(() => {
+    isInitialDbLoadedRef.current = false;
+    loadedUsernameRef.current = null;
+
+    if (!activeUsername) return;
+
     let mounted = true;
-    Promise.all([loadSavedStudentsAsync(), loadSavedClassesAsync()])
+    const syncClasses = loadSavedClasses(activeUsername);
+    const syncStudents = loadSavedStudents(activeUsername);
+    const syncActiveClass = loadSavedActiveClass(activeUsername);
+
+    setClasses(syncClasses);
+    setStudents(syncStudents);
+    setSelectedClass(syncActiveClass);
+
+    Promise.all([
+      loadSavedStudentsAsync(activeUsername),
+      loadSavedClassesAsync(activeUsername),
+    ])
       .then(([dbStudents, dbClasses]) => {
         if (!mounted) return;
         if (dbStudents && dbStudents.length > 0) {
           setStudents(dbStudents);
         } else {
-          saveStudents(students);
+          saveStudents(syncStudents, activeUsername);
         }
         if (dbClasses && dbClasses.length > 0) {
           setClasses(dbClasses);
         } else {
-          saveClasses(classes);
+          saveClasses(syncClasses, activeUsername);
         }
+        loadedUsernameRef.current = activeUsername;
         isInitialDbLoadedRef.current = true;
       })
       .catch(() => {
+        if (!mounted) return;
+        loadedUsernameRef.current = activeUsername;
         isInitialDbLoadedRef.current = true;
       });
+
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [activeUsername]);
 
-  // Save changes to IndexedDB + localStorage only after initial DB hydration completes
+  // Save changes to IndexedDB + localStorage strictly for the active user account
   useEffect(() => {
-    if (!isInitialDbLoadedRef.current) return;
-    saveStudents(students);
-  }, [students]);
+    if (
+      !activeUsername ||
+      !isInitialDbLoadedRef.current ||
+      loadedUsernameRef.current !== activeUsername
+    ) {
+      return;
+    }
+    saveStudents(students, activeUsername);
+  }, [students, activeUsername]);
 
   useEffect(() => {
-    if (!isInitialDbLoadedRef.current) return;
-    saveClasses(classes);
-  }, [classes]);
+    if (
+      !activeUsername ||
+      !isInitialDbLoadedRef.current ||
+      loadedUsernameRef.current !== activeUsername
+    ) {
+      return;
+    }
+    saveClasses(classes, activeUsername);
+  }, [classes, activeUsername]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_ACTIVE_CLASS_KEY, selectedClass);
-    } catch {}
-  }, [selectedClass]);
+    if (
+      !activeUsername ||
+      !isInitialDbLoadedRef.current ||
+      loadedUsernameRef.current !== activeUsername
+    ) {
+      return;
+    }
+    saveActiveClass(selectedClass, activeUsername);
+  }, [selectedClass, activeUsername]);
 
   useEffect(() => {
     try {
@@ -294,6 +346,21 @@ export default function App() {
 
   const calledCount = callableStudents.filter((s) => s.called).length;
   const uncalledCount = callableStudents.length - calledCount;
+
+  // MANDATORY LOGIN GATE: Người dùng chưa đăng nhập thì chưa vào ứng dụng được
+  if (!currentAccount) {
+    return (
+      <div className="h-screen w-screen overflow-hidden bg-slate-950 select-none">
+        <AuthModal
+          isOpen={true}
+          initialTab={authInitialTab}
+          isMandatoryGate={true}
+          onClose={() => {}}
+        />
+        <OfflineIndicator />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -543,10 +610,7 @@ export default function App() {
                       <span className="text-[9px] font-bold text-indigo-600 mt-0.5">
                         {currentAccount.role === 'admin'
                           ? '👑 Admin'
-                          : `Còn ${Math.max(
-                              0,
-                              Math.ceil((currentAccount.expiresAt - Date.now()) / 86400000)
-                            )} ngày`}
+                          : `Còn ${Math.max(0, getRemainingDays(currentAccount.expiresAt))} ngày`}
                       </span>
                     </div>
                   </>
@@ -713,8 +777,9 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Content Viewport */}
+      {/* Main Content Viewport (keyed by username so each user has a clean isolated workspace) */}
       <main
+        key={currentAccount.username}
         className={`flex-1 min-h-0 w-full mx-auto flex flex-col ${
           currentMode === 'space3d' || currentMode === 'race' || currentMode === 'ziczac' || currentMode === 'quiz'
             ? 'p-1 sm:px-2 w-full max-w-[1800px] h-full overflow-hidden'

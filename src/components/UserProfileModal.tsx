@@ -6,6 +6,7 @@ import {
   compressAvatarImage,
   parseActiveDevices,
   getDeviceId,
+  getRemainingDays,
 } from '../services/accountService';
 import {
   X,
@@ -61,7 +62,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
 
   const activeDevices = parseActiveDevices(account);
   const currentDeviceId = getDeviceId();
-  const daysRemaining = Math.ceil((account.expiresAt - Date.now()) / 86400000);
+  const daysRemaining = getRemainingDays(account.expiresAt);
 
   const handleUploadAvatar = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];

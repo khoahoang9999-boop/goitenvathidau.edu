@@ -5,10 +5,25 @@ import { sound } from './sound';
 const APP_DB_NAME = 'ClassroomAppStorageDB';
 const APP_DB_VERSION = 1;
 const APP_STORE_NAME = 'app_data';
+const CURRENT_USER_STORAGE_KEY = 'classroom_current_username_v1';
 
 // Request persistent storage from browser so IndexedDB & LocalStorage are never auto-cleared
 if (typeof window !== 'undefined' && navigator.storage && navigator.storage.persist) {
   navigator.storage.persist().catch(() => {});
+}
+
+export function getCurrentUserScope(explicitUsername?: string | null): string {
+  const raw =
+    explicitUsername ??
+    (typeof window !== 'undefined' ? localStorage.getItem(CURRENT_USER_STORAGE_KEY) : null);
+  const clean = (raw || 'guest').trim().toLowerCase().replace(/[^a-z0-9_\-]/g, '_');
+  return clean || 'guest';
+}
+
+export function getUserScopedKey(baseKey: string, explicitUsername?: string | null): string {
+  const scope = getCurrentUserScope(explicitUsername);
+  if (baseKey.includes('__user_')) return baseKey;
+  return `${baseKey}__user_${scope}`;
 }
 
 export function openAppDB(): Promise<IDBDatabase> {
@@ -29,13 +44,18 @@ export function openAppDB(): Promise<IDBDatabase> {
   });
 }
 
-export async function saveToAppDB<T>(key: string, value: T): Promise<void> {
+export async function saveToAppDB<T>(
+  key: string,
+  value: T,
+  explicitUsername?: string | null
+): Promise<void> {
   try {
+    const scopedKey = getUserScopedKey(key, explicitUsername);
     const db = await openAppDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(APP_STORE_NAME, 'readwrite');
       const store = tx.objectStore(APP_STORE_NAME);
-      const req = store.put({ key, value, updatedAt: Date.now() });
+      const req = store.put({ key: scopedKey, value, updatedAt: Date.now() });
       req.onsuccess = () => resolve();
       req.onerror = () => reject(req.error);
     });
@@ -44,14 +64,34 @@ export async function saveToAppDB<T>(key: string, value: T): Promise<void> {
   }
 }
 
-export async function getFromAppDB<T>(key: string): Promise<T | null> {
+export async function getFromAppDB<T>(
+  key: string,
+  explicitUsername?: string | null
+): Promise<T | null> {
   try {
+    const scope = getCurrentUserScope(explicitUsername);
+    const scopedKey = getUserScopedKey(key, scope);
     const db = await openAppDB();
     return new Promise((resolve) => {
       const tx = db.transaction(APP_STORE_NAME, 'readonly');
       const store = tx.objectStore(APP_STORE_NAME);
-      const req = store.get(key);
-      req.onsuccess = () => resolve(req.result ? (req.result.value as T) : null);
+      const req = store.get(scopedKey);
+      req.onsuccess = () => {
+        if (req.result) {
+          resolve(req.result.value as T);
+          return;
+        }
+        // Only migrate legacy unscoped data for 'admin' so existing admin data is preserved,
+        // while all other accounts remain 100% isolated.
+        if (scope === 'admin' && !key.includes('__user_')) {
+          const fallbackReq = store.get(key);
+          fallbackReq.onsuccess = () =>
+            resolve(fallbackReq.result ? (fallbackReq.result.value as T) : null);
+          fallbackReq.onerror = () => resolve(null);
+        } else {
+          resolve(null);
+        }
+      };
       req.onerror = () => resolve(null);
     });
   } catch {
@@ -59,8 +99,12 @@ export async function getFromAppDB<T>(key: string): Promise<T | null> {
   }
 }
 
-export async function getAllKeysFromAppDB(): Promise<Record<string, any>> {
+export async function getAllKeysFromAppDB(
+  explicitUsername?: string | null
+): Promise<Record<string, any>> {
   try {
+    const scope = getCurrentUserScope(explicitUsername);
+    const suffix = `__user_${scope}`;
     const db = await openAppDB();
     return new Promise((resolve) => {
       const tx = db.transaction(APP_STORE_NAME, 'readonly');
@@ -71,7 +115,14 @@ export async function getAllKeysFromAppDB(): Promise<Record<string, any>> {
         if (Array.isArray(req.result)) {
           req.result.forEach((item: { key: string; value: any }) => {
             if (item && item.key) {
-              result[item.key] = item.value;
+              if (item.key.endsWith(suffix)) {
+                const baseKey = item.key.slice(0, item.key.length - suffix.length);
+                result[baseKey] = item.value;
+              } else if (scope === 'admin' && !item.key.includes('__user_')) {
+                if (!(item.key in result)) {
+                  result[item.key] = item.value;
+                }
+              }
             }
           });
         }
@@ -136,11 +187,14 @@ export async function createFullBackupData(
 ): Promise<FullBackupPayload> {
   const allDbData = await getAllKeysFromAppDB();
   const customTugImage =
-    allDbData['custom_tug_image'] || localStorage.getItem('cp_custom_tug_image') || null;
+    allDbData['custom_tug_image'] ||
+    localStorage.getItem(getUserScopedKey('cp_custom_tug_image')) ||
+    null;
 
   let quizSets: QuizSet[] | undefined;
   try {
-    const savedQuiz = allDbData['quiz_sets'] || localStorage.getItem('cp_quiz_sets');
+    const savedQuiz =
+      allDbData['quiz_sets'] || localStorage.getItem(getUserScopedKey('cp_quiz_sets'));
     if (savedQuiz) {
       quizSets = typeof savedQuiz === 'string' ? JSON.parse(savedQuiz) : savedQuiz;
     }
@@ -175,8 +229,8 @@ export async function createFullBackupData(
     selectedClass,
     customTugImage,
     quizSets,
-    arenaTheme: localStorage.getItem('cp_arena_theme') || 'tug',
-    showStudentFaces: localStorage.getItem('cp_show_student_faces') !== 'false',
+    arenaTheme: localStorage.getItem(getUserScopedKey('cp_arena_theme')) || 'tug',
+    showStudentFaces: localStorage.getItem(getUserScopedKey('cp_show_student_faces')) !== 'false',
     classPhotos,
     music: {
       source: sound.getMusicSource(),
@@ -195,24 +249,33 @@ export async function restoreFullBackupData(payload: FullBackupPayload): Promise
     throw new Error('File sao lưu không hợp lệ hoặc bị hỏng.');
   }
 
-  // 1. Save students & classes to IndexedDB + localStorage
+  // 1. Save students & classes to current user's isolated IndexedDB + localStorage
   await saveToAppDB('students', payload.students);
   if (Array.isArray(payload.classes) && payload.classes.length > 0) {
     await saveToAppDB('classes', payload.classes);
     try {
-      localStorage.setItem('classroom_picker_classes_v3', JSON.stringify(payload.classes));
+      localStorage.setItem(
+        getUserScopedKey('classroom_picker_classes_v3'),
+        JSON.stringify(payload.classes)
+      );
     } catch {}
   }
 
   try {
-    localStorage.setItem('classroom_picker_students_v3', JSON.stringify(payload.students));
+    localStorage.setItem(
+      getUserScopedKey('classroom_picker_students_v3'),
+      JSON.stringify(payload.students)
+    );
   } catch {
     // If localStorage hits 5MB quota due to many photos, IndexedDB still holds 100% of photos safely
   }
 
   if (payload.selectedClass) {
     try {
-      localStorage.setItem('classroom_picker_active_class_v3', payload.selectedClass);
+      localStorage.setItem(
+        getUserScopedKey('classroom_picker_active_class_v3'),
+        payload.selectedClass
+      );
     } catch {}
   }
 
@@ -220,7 +283,7 @@ export async function restoreFullBackupData(payload: FullBackupPayload): Promise
   if (payload.customTugImage) {
     await saveToAppDB('custom_tug_image', payload.customTugImage);
     try {
-      localStorage.setItem('cp_custom_tug_image', payload.customTugImage);
+      localStorage.setItem(getUserScopedKey('cp_custom_tug_image'), payload.customTugImage);
     } catch {}
   }
 
@@ -228,7 +291,7 @@ export async function restoreFullBackupData(payload: FullBackupPayload): Promise
   if (Array.isArray(payload.quizSets) && payload.quizSets.length > 0) {
     await saveToAppDB('quiz_sets', payload.quizSets);
     try {
-      localStorage.setItem('cp_quiz_sets', JSON.stringify(payload.quizSets));
+      localStorage.setItem(getUserScopedKey('cp_quiz_sets'), JSON.stringify(payload.quizSets));
     } catch {}
   }
 

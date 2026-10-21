@@ -4,7 +4,7 @@ import { DEFAULT_QUIZ_SETS } from '../utils/defaultQuizData';
 import { sound } from '../services/sound';
 import { ConfettiEngine } from '../services/confetti';
 import { getShortName, getInitials } from '../utils/defaultData';
-import { saveToAppDB, getFromAppDB } from '../services/dataStorage';
+import { saveToAppDB, getFromAppDB, getUserScopedKey } from '../services/dataStorage';
 import {
   HelpCircle,
   Play,
@@ -66,9 +66,9 @@ const DEFAULT_TEAM_NAMES = [
 ];
 
 export const ClassroomQuiz: React.FC<ClassroomQuizProps> = ({ students = [] }) => {
-  // Quiz sets stored in localStorage
+  // Quiz sets stored in localStorage scoped per user account
   const [quizSets, setQuizSets] = useState<QuizSet[]>(() => {
-    const saved = localStorage.getItem('cp_quiz_sets');
+    const saved = localStorage.getItem(getUserScopedKey('cp_quiz_sets'));
     if (saved) {
       try {
         return JSON.parse(saved);
@@ -156,7 +156,7 @@ export const ClassroomQuiz: React.FC<ClassroomQuizProps> = ({ students = [] }) =
   // Custom uploaded Tug of War background/artwork image (persisted in IndexedDB + localStorage)
   const [customTugImage, setCustomTugImage] = useState<string | null>(() => {
     try {
-      return localStorage.getItem('cp_custom_tug_image');
+      return localStorage.getItem(getUserScopedKey('cp_custom_tug_image'));
     } catch {
       return null;
     }
@@ -220,7 +220,7 @@ export const ClassroomQuiz: React.FC<ClassroomQuizProps> = ({ students = [] }) =
         setCustomTugImage(compressed);
         saveToAppDB('custom_tug_image', compressed).catch(() => {});
         try {
-          localStorage.setItem('cp_custom_tug_image', compressed);
+          localStorage.setItem(getUserScopedKey('cp_custom_tug_image'), compressed);
         } catch {}
       } else {
         setCustomTugImage(dataUrl);
@@ -250,7 +250,7 @@ export const ClassroomQuiz: React.FC<ClassroomQuizProps> = ({ students = [] }) =
     setCustomTugImage(null);
     saveToAppDB('custom_tug_image', null).catch(() => {});
     try {
-      localStorage.removeItem('cp_custom_tug_image');
+      localStorage.removeItem(getUserScopedKey('cp_custom_tug_image'));
     } catch {}
     sound.playTick();
   };
@@ -336,7 +336,9 @@ export const ClassroomQuiz: React.FC<ClassroomQuizProps> = ({ students = [] }) =
 
   // Save quiz sets
   useEffect(() => {
-    localStorage.setItem('cp_quiz_sets', JSON.stringify(quizSets));
+    try {
+      localStorage.setItem(getUserScopedKey('cp_quiz_sets'), JSON.stringify(quizSets));
+    } catch {}
   }, [quizSets]);
 
   // Auto divide students

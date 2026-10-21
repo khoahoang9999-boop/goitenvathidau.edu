@@ -1,5 +1,10 @@
 import { Student } from '../types';
-import { saveToAppDB, getFromAppDB } from '../services/dataStorage';
+import {
+  saveToAppDB,
+  getFromAppDB,
+  getCurrentUserScope,
+  getUserScopedKey,
+} from '../services/dataStorage';
 
 export const AVATAR_COLORS = [
   '#3B82F6', // Blue
@@ -88,22 +93,61 @@ const LEGACY_CLASS_KEYS = [
   'cp_classes',
 ];
 
-export function loadSavedClasses(): { id: string; name: string; grade: string }[] {
+export function loadSavedActiveClass(explicitUsername?: string | null): string {
   try {
-    for (const key of LEGACY_CLASS_KEYS) {
-      const raw = localStorage.getItem(key);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    const scope = getCurrentUserScope(explicitUsername);
+    const scopedKey = getUserScopedKey(STORAGE_ACTIVE_CLASS_KEY, scope);
+    const saved = localStorage.getItem(scopedKey);
+    if (saved) return saved;
+    if (scope === 'admin') {
+      const legacy = localStorage.getItem(STORAGE_ACTIVE_CLASS_KEY);
+      if (legacy) return legacy;
+    }
+  } catch {}
+  return 'Lớp 6A1';
+}
+
+export function saveActiveClass(selectedClass: string, explicitUsername?: string | null): void {
+  try {
+    const scopedKey = getUserScopedKey(STORAGE_ACTIVE_CLASS_KEY, explicitUsername);
+    localStorage.setItem(scopedKey, selectedClass);
+  } catch {}
+}
+
+export function loadSavedClasses(
+  explicitUsername?: string | null
+): { id: string; name: string; grade: string }[] {
+  try {
+    const scope = getCurrentUserScope(explicitUsername);
+    const scopedKey = getUserScopedKey(STORAGE_CLASSES_KEY, scope);
+    const rawScoped = localStorage.getItem(scopedKey);
+    if (rawScoped) {
+      const parsed = JSON.parse(rawScoped);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+
+    // Only allow legacy unscoped fallback for root admin account
+    if (scope === 'admin') {
+      for (const key of LEGACY_CLASS_KEYS) {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
       }
     }
   } catch {}
-  return SAMPLE_CLASSES;
+  return SAMPLE_CLASSES.map((c) => ({ ...c }));
 }
 
-export async function loadSavedClassesAsync(): Promise<{ id: string; name: string; grade: string }[] | null> {
+export async function loadSavedClassesAsync(
+  explicitUsername?: string | null
+): Promise<{ id: string; name: string; grade: string }[] | null> {
   try {
-    const dbClasses = await getFromAppDB<{ id: string; name: string; grade: string }[]>('classes');
+    const dbClasses = await getFromAppDB<{ id: string; name: string; grade: string }[]>(
+      'classes',
+      explicitUsername
+    );
     if (Array.isArray(dbClasses) && dbClasses.length > 0) {
       return dbClasses;
     }
@@ -111,10 +155,14 @@ export async function loadSavedClassesAsync(): Promise<{ id: string; name: strin
   return null;
 }
 
-export function saveClasses(classes: { id: string; name: string; grade: string }[]): void {
-  saveToAppDB('classes', classes).catch(() => {});
+export function saveClasses(
+  classes: { id: string; name: string; grade: string }[],
+  explicitUsername?: string | null
+): void {
+  saveToAppDB('classes', classes, explicitUsername).catch(() => {});
   try {
-    localStorage.setItem(STORAGE_CLASSES_KEY, JSON.stringify(classes));
+    const scopedKey = getUserScopedKey(STORAGE_CLASSES_KEY, explicitUsername);
+    localStorage.setItem(scopedKey, JSON.stringify(classes));
   } catch {}
 }
 
@@ -132,24 +180,39 @@ function normalizeStudentArray(parsed: Partial<Student>[]): Student[] {
   })) as Student[];
 }
 
-export function loadSavedStudents(): Student[] {
+export function loadSavedStudents(explicitUsername?: string | null): Student[] {
   try {
-    for (const key of LEGACY_STUDENT_KEYS) {
-      const raw = localStorage.getItem(key);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return normalizeStudentArray(parsed);
+    const scope = getCurrentUserScope(explicitUsername);
+    const scopedKey = getUserScopedKey(STORAGE_KEY, scope);
+    const rawScoped = localStorage.getItem(scopedKey);
+    if (rawScoped) {
+      const parsed = JSON.parse(rawScoped);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return normalizeStudentArray(parsed);
+      }
+    }
+
+    // Only allow legacy unscoped fallback for root admin account
+    if (scope === 'admin') {
+      for (const key of LEGACY_STUDENT_KEYS) {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return normalizeStudentArray(parsed);
+          }
         }
       }
     }
   } catch {}
-  return SAMPLE_STUDENTS;
+  return SAMPLE_STUDENTS.map((s) => ({ ...s }));
 }
 
-export async function loadSavedStudentsAsync(): Promise<Student[] | null> {
+export async function loadSavedStudentsAsync(
+  explicitUsername?: string | null
+): Promise<Student[] | null> {
   try {
-    const dbStudents = await getFromAppDB<Student[]>('students');
+    const dbStudents = await getFromAppDB<Student[]>('students', explicitUsername);
     if (Array.isArray(dbStudents) && dbStudents.length > 0) {
       return normalizeStudentArray(dbStudents);
     }
@@ -157,12 +220,13 @@ export async function loadSavedStudentsAsync(): Promise<Student[] | null> {
   return null;
 }
 
-export function saveStudents(students: Student[]): void {
+export function saveStudents(students: Student[], explicitUsername?: string | null): void {
   // Always persist full high-resolution student list + avatars to IndexedDB (unlimited quota)
-  saveToAppDB('students', students).catch(() => {});
+  saveToAppDB('students', students, explicitUsername).catch(() => {});
 
+  const scopedKey = getUserScopedKey(STORAGE_KEY, explicitUsername);
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(students));
+    localStorage.setItem(scopedKey, JSON.stringify(students));
   } catch {
     // If localStorage hits 5MB quota due to many cropped student photos,
     // save student list with lightweight SVG fallback in localStorage while IndexedDB keeps 100% of photos
@@ -171,8 +235,7 @@ export function saveStudents(students: Student[]): void {
         ...s,
         avatar: s.avatar && s.avatar.length > 15000 ? undefined : s.avatar,
       }));
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(lightweight));
+      localStorage.setItem(scopedKey, JSON.stringify(lightweight));
     } catch {}
   }
 }
-
